@@ -8,19 +8,19 @@
 #include "AdafruitIO_WiFi.h"
 
 // ======== CONFIGURACIÓN WIFI ========
-#define WIFI_SSID       "ARRIS-EAC2"
-#define WIFI_PASS       "2PM7H7601150"
+#define WIFI_SSID       "CRTSTDS"
+#define WIFI_PASS       "ngmc6126"
 
 // ======== CONFIGURACIÓN ADAFRUIT IO ========
-#define IO_USERNAME     "Chruz"
-#define IO_KEY          "aio_HDyF04UNUcMJ4KLCUAZsxuR8pNYx"
+#define IO_USERNAME     ""
+#define IO_KEY          ""
 
 AdafruitIO_WiFi io(IO_USERNAME, IO_KEY, WIFI_SSID, WIFI_PASS);
 
 // Feeds de salida
 AdafruitIO_Feed *feed_peso       = io.feed("peso");
 AdafruitIO_Feed *feed_distancia  = io.feed("distancia");
-AdafruitIO_Feed *feed_contrasena = io.feed("contrasena");   // <<-- nuevo feed
+AdafruitIO_Feed *feed_contrasena = io.feed("contrasena");
 
 // Feeds de entrada
 AdafruitIO_Feed *feed_elevador   = io.feed("elevador");
@@ -28,11 +28,19 @@ AdafruitIO_Feed *feed_elevador   = io.feed("elevador");
 // Prototipos de callbacks
 void handleElevador(AdafruitIO_Data *data);
 
-// Control de tiempo independiente
+// Control de tiempo
+unsigned long lastRequest     = 0;
+const unsigned long reqPeriod = 2000;   // cada 2s pedimos datos al Maestro
+
+// Control de envío a Adafruit
 unsigned long lastSendPeso       = 0;
 unsigned long lastSendDistancia  = 0;
 unsigned long lastSendContrasena = 0;
-const unsigned long sendInterval = 1000; // 1s entre envíos para evitar saturación
+const unsigned long sendInterval = 1500;
+
+// Buffer para comando elevador pendiente
+volatile bool elevadorPendiente = false;
+String comandoElevador = "";
 
 void setup() {
   Serial.begin(115200);
@@ -44,7 +52,7 @@ void setup() {
   Serial.println("Conectando a Adafruit IO...");
   io.connect();
 
-  // Suscripciones a feeds de entrada
+  // Suscripción al feed de elevador
   feed_elevador->onMessage(handleElevador);
 
   while (io.status() < AIO_CONNECTED) {
@@ -54,20 +62,37 @@ void setup() {
   Serial.println("\n✅ Conectado a Adafruit IO");
 }
 
-
 // --- Callback elevador ---
 void handleElevador(AdafruitIO_Data *data) {
   int valor = data->toInt();
   Serial.print("📥 Elevador desde Adafruit: ");
   Serial.println(valor);
 
-  // Mandar al Maestro
-  Serial2.print("E:");
-  Serial2.println(valor);
+  // Guardar comando pendiente
+  comandoElevador = "E:" + String(valor);
+  elevadorPendiente = true;
 }
 
 void loop() {
   io.run();
+
+  // --- Enviar comando elevador si está pendiente ---
+  if (elevadorPendiente) {
+    Serial2.println(comandoElevador);
+    Serial.print("📤 Elevador enviado al Maestro: ");
+    Serial.println(comandoElevador);
+    elevadorPendiente = false;   // se envió, limpiar bandera
+  }
+
+  // --- Solicitar datos periódicamente ---
+  if (millis() - lastRequest > reqPeriod) {
+    Serial2.println("P?");
+    delay(30);
+    Serial2.println("D?");
+    delay(30);
+    Serial2.println("N?");
+    lastRequest = millis();
+  }
 
   // --- Lectura desde Maestro ---
   if (Serial2.available()) {
@@ -99,7 +124,7 @@ void loop() {
       }
     }
 
-    // --- Contrasena (NFC/Primer byte) ---
+    // --- Contraseña (NFC) ---
     else if (valor.startsWith("N:")) {
       if (millis() - lastSendContrasena > sendInterval) {
         String contrasena = valor.substring(2);

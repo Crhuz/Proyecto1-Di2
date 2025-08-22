@@ -15,7 +15,7 @@
 #include "I2C.h"
 
 // Dirección I2C del VL53L0X (por defecto)
-#define VL53L0X_ADDRESS 0x52
+#define VL53L0X_ADDRESS 0x29
 
 // Registros principales del VL53L0X
 #define VL53L0X_REG_IDENTIFICATION_MODEL_ID         0xC0

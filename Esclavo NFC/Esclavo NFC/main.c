@@ -1,16 +1,15 @@
 /*
- * NFC_Ultrasonico_I2C_Slave.c
+ * NFC_I2C_Slave.c
  *
- * Created: 19/08/2025
+ * Created: 21/08/2025
  * Author: Manuel
  * Description:
- *   Esclavo I2C (0x30) que combina:
+ *   Esclavo I2C (0x30) con:
  *      - Lector RFID RC522 (NFC)
- *      - Sensor Ultrasonico HC-SR04
- *      - Motor (elevador)
- *   Envía por I2C el valor solicitado por el maestro:
- *      'D' ? distancia en cm
- *      'R' ? primer byte del UID NFC
+ *      - Control de talanquera con servo
+ *   Funcionalidad:
+ *      - Detecta tarjeta y abre talanquera automáticamente
+ *      - Envía UID completo (5 bytes) al maestro cuando este lo solicite con 'R'
  */
 
 #define F_CPU 16000000UL
@@ -26,133 +25,51 @@
 // Dirección I2C del esclavo
 #define SlaveAddress 0x30  
 
-// Pines del ultrasonico
-#define TRIG_PORT PORTD
-#define TRIG_DDR  DDRD
-#define TRIG_PIN  PD5
-#define ECHO_PIN  PD6
-#define ECHO_PORT PIND
-
-// ================= Puente H =================
-#define H_DDR   DDRB
-#define H_PORT  PORTB
-#define IN1     PB0
-#define IN2     PB1
-
-
 // ---------------- Variables ----------------
-volatile uint8_t buffer = 0;       // Comando recibido del Maestro
-volatile uint8_t distancia_cm = 0; // Última distancia medida
-volatile uint8_t ntarjeta = 0;     // Primer byte del UID NFC
-
-char uart_buf[32];
+volatile uint8_t buffer = 0;        // Último comando recibido por I2C
+uint8_t uid[5] = {0};               // UID de la tarjeta leída
 char hex[3];
 
-uint16_t Ultrasonico_Read(void);
-
-// ---------------- Motor ----------------
-
-void Motor_Init(void) {
-	H_DDR |= (1<<IN1) | (1<<IN2);
+// ---------------- Servo (Talanquera) ----------------
+void Servo_Init(void) {
+    DDRB |= (1<<PB1);  // OC1A como salida (PB1)
+    TCCR1A = (1<<COM1A1) | (1<<WGM11);          // Modo PWM no invertido
+    TCCR1B = (1<<WGM13) | (1<<WGM12) | (1<<CS11); // Prescaler 8, modo 14 (Fast PWM ICR1 TOP)
+    ICR1 = 39999;  // Frecuencia 50Hz (20ms período)
 }
 
-void Motor_Stop(void) {
-	H_PORT &= ~((1<<IN1)|(1<<IN2));
-	OCR0A = 0;
+void Servo_Abrir(void) {
+    // Pulso 2ms ? posición abierta
+    OCR1A = 4000;
 }
 
-void Motor_Up(void) {
-	H_PORT |= (1<<IN1);
-	H_PORT &= ~(1<<IN2);
-	OCR0A = 200;
-}
-
-void Motor_Down(void) {
-	H_PORT |= (1<<IN2);
-	H_PORT &= ~(1<<IN1);
-	OCR0A = 200;
-}
-
-// ================= Control de niveles =================
-uint8_t nivel_objetivo = 0;
-
-void MoverANivel(uint8_t nivel) {
-	uint8_t target_cm = 0;
-	switch(nivel) {
-		case 1: target_cm = 22; break;
-		case 2: target_cm = 14; break;
-		case 3: target_cm = 8;  break;
-		case 4: target_cm = 0;  break;
-		default: return; // nivel inválido
-	}
-
-	sprintf(uart_buf, "Moviendo a nivel %u (%u cm)\r\n", nivel, target_cm);
-	UART_write_txt(uart_buf);
-
-	while (1) {
-		uint16_t d = Ultrasonico_Read();
-		distancia_cm = (d>255)?255:d;
-
-		if (distancia_cm > target_cm + 1) {
-			Motor_Down(); // bajar
-			} else if (distancia_cm < target_cm - 1) {
-			Motor_Up();   // subir
-			} else {
-			Motor_Stop();
-			sprintf(uart_buf, "Nivel %u alcanzado (%u cm)\r\n", nivel, distancia_cm);
-			UART_write_txt(uart_buf);
-			break;
-		}
-		_delay_ms(100);
-	}
-}
-
-
-// ---------------- Ultrasonico ----------------
-void Ultrasonico_Init(void) {
-    TRIG_DDR |= (1<<TRIG_PIN);   // TRIG salida
-    DDRD &= ~(1<<ECHO_PIN);      // ECHO entrada
-}
-
-uint16_t Ultrasonico_Read(void) {
-    uint16_t contador = 0;
-
-    // Pulso TRIG 10us
-    TRIG_PORT &= ~(1<<TRIG_PIN);
-    _delay_us(2);
-    TRIG_PORT |= (1<<TRIG_PIN);
-    _delay_us(10);
-    TRIG_PORT &= ~(1<<TRIG_PIN);
-
-    // Esperar flanco de subida en ECHO
-    while (!(ECHO_PORT & (1<<ECHO_PIN)));
-
-    // Medir ancho del pulso
-    while (ECHO_PORT & (1<<ECHO_PIN)) {
-        _delay_us(1);
-        contador++;
-    }
-
-    // Convertir a cm
-    return (contador * 0.0343) / 2;
+void Servo_Cerrar(void) {
+    // Pulso 1ms ? posición cerrada
+    OCR1A = 2000;
 }
 
 // ---------------- NFC ----------------
-
 void lectura_NFC(void) {
     if (rfid_isCard()) {
-        UART_write_txt("Card detected!\r\n");
+        UART_write_txt("Tarjeta detectada!\r\n");
         if (rfid_readCardSerial()) {
-            UART_write_txt("Card Serial: ");
+            UART_write_txt("UID: ");
             for (int i = 0; i < 5; i++) {
-                sprintf(hex, "%02X", rfid_state.serNum[i]);
+                uid[i] = rfid_state.serNum[i]; // guardar UID
+                sprintf(hex, "%02X", uid[i]);
                 UART_write_txt(hex);
             }
-            ntarjeta = rfid_state.serNum[0]; // Guardamos primer byte
             UART_write_txt("\r\n");
 
-        } else {
-            UART_write_txt("Failed to read card serial.\r\n");
+            // Aquí se podría validar UID contra lista autorizada
+            // if (uid[0]==0xDE && uid[1]==0xAD && ...) { // ejemplo filtro
+            //     Servo_Abrir();
+            // }
+
+            // Por ahora cualquier tarjeta abre talanquera
+            Servo_Abrir();
+            _delay_ms(3000);   // tiempo de paso
+            Servo_Cerrar();
         }
     }
     _delay_ms(200);
@@ -161,6 +78,7 @@ void lectura_NFC(void) {
 // ---------------- I2C ISR ----------------
 ISR(TWI_vect) {
     uint8_t estado;
+    static uint8_t i = 0;  // índice de envío UID
     estado = TWSR & 0xFC;
 
     switch (estado) {
@@ -171,22 +89,15 @@ ISR(TWI_vect) {
 
         case 0x80: // Dato recibido desde Maestro
         case 0x90:
-        if (buffer == 'E') {
-	        // el siguiente byte es el nivel
-	        nivel_objetivo = TWDR;
-	        MoverANivel(nivel_objetivo);
-	        } else {
-	        buffer = TWDR;  // Guardamos comando normal ('D','R')
-        }
-        TWCR |= (1 << TWINT);
-        break;
+            buffer = TWDR;  // Guardamos comando
+            TWCR |= (1 << TWINT);
+            break;
 
-        case 0xA8: // SLA+R recibido ? enviar dato
+        case 0xA8: // SLA+R recibido -> enviar datos
         case 0xB8:
-            if (buffer == 'D') {
-                TWDR = distancia_cm;  
-            } else if (buffer == 'R') {
-                TWDR = ntarjeta;
+            if (buffer == 'R') {
+                TWDR = uid[i++];
+                if (i >= 5) i = 0; // reinicia después de enviar 5 bytes
             } else {
                 TWDR = 0xFF; // Valor inválido
             }
@@ -202,25 +113,16 @@ ISR(TWI_vect) {
 // ---------------- MAIN ----------------
 int main(void) {
     UART_init();
-    Ultrasonico_Init();
     I2C_Slave_Init(SlaveAddress);
     rfid_init();
-	Motor_Init();
-	
+    Servo_Init();
 
     sei(); // Habilitar interrupciones
 
-    UART_write_txt("\r\nEsclavo I2C - NFC + Ultrasonico + Servo listo!\r\n");
+    Servo_Cerrar(); // iniciar cerrada
+    UART_write_txt("\r\nEsclavo I2C - NFC listo!\r\n");
 
-  while (1) {
-	  // Actualizar ultrasonico
-	  uint16_t d = Ultrasonico_Read();
-	  if (d > 255) d = 255;
-	  distancia_cm = (uint8_t)d;
-	  sprintf(uart_buf, "Distancia: %u cm\r\n", distancia_cm);
-	  UART_write_txt(uart_buf);
-	  // Actualizar NFC }
-	  lectura_NFC();
-	  _delay_ms(500);
-  }
+    while (1) {
+        lectura_NFC();   // Leer tarjetas
+    }
 }
