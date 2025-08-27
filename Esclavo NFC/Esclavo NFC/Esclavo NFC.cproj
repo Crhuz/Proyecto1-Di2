@@ -135,10 +135,10 @@
     <Compile Include="main.c">
       <SubType>compile</SubType>
     </Compile>
-    <Compile Include="spi_simple.c">
+    <Compile Include="PWM0.c">
       <SubType>compile</SubType>
     </Compile>
-    <Compile Include="spi_simple.h">
+    <Compile Include="PWM0.h">
       <SubType>compile</SubType>
     </Compile>
     <Compile Include="UART.h">

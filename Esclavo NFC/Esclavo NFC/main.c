@@ -20,33 +20,19 @@
 #include <stdio.h>
 #include "UART.h"
 #include "ALB_RFID.h"
+#include "PWM0.h"
 #include "I2C.h"
 
 // Dirección I2C del esclavo
 #define SlaveAddress 0x30  
+#define Talanquera_Abierta 950
+#define Talanquera_cerrada 450
 
 // ---------------- Variables ----------------
 volatile uint8_t buffer = 0;        // Último comando recibido por I2C
 uint8_t uid[5] = {0};               // UID de la tarjeta leída
 char hex[3];
-
-// ---------------- Servo (Talanquera) ----------------
-void Servo_Init(void) {
-    DDRB |= (1<<PB1);  // OC1A como salida (PB1)
-    TCCR1A = (1<<COM1A1) | (1<<WGM11);          // Modo PWM no invertido
-    TCCR1B = (1<<WGM13) | (1<<WGM12) | (1<<CS11); // Prescaler 8, modo 14 (Fast PWM ICR1 TOP)
-    ICR1 = 39999;  // Frecuencia 50Hz (20ms período)
-}
-
-void Servo_Abrir(void) {
-    // Pulso 2ms ? posición abierta
-    OCR1A = 4000;
-}
-
-void Servo_Cerrar(void) {
-    // Pulso 1ms ? posición cerrada
-    OCR1A = 2000;
-}
+uint8_t mservo = 1;
 
 // ---------------- NFC ----------------
 void lectura_NFC(void) {
@@ -67,12 +53,10 @@ void lectura_NFC(void) {
             // }
 
             // Por ahora cualquier tarjeta abre talanquera
-            Servo_Abrir();
-            _delay_ms(3000);   // tiempo de paso
-            Servo_Cerrar();
+               // tiempo de paso
         }
     }
-    _delay_ms(200);
+    _delay_ms(500);
 }
 
 // ---------------- I2C ISR ----------------
@@ -90,15 +74,18 @@ ISR(TWI_vect) {
         case 0x80: // Dato recibido desde Maestro
         case 0x90:
             buffer = TWDR;  // Guardamos comando
+			if (buffer == 'T'){
+				mservo = 1;
+			}
             TWCR |= (1 << TWINT);
             break;
 
         case 0xA8: // SLA+R recibido -> enviar datos
         case 0xB8:
-            if (buffer == 'R') {
+			if (buffer == 'R') {
                 TWDR = uid[i++];
                 if (i >= 5) i = 0; // reinicia después de enviar 5 bytes
-            } else {
+            }else {
                 TWDR = 0xFF; // Valor inválido
             }
             TWCR = (1 << TWEN) | (1 << TWIE) | (1 << TWINT) | (1 << TWEA);
@@ -115,14 +102,21 @@ int main(void) {
     UART_init();
     I2C_Slave_Init(SlaveAddress);
     rfid_init();
-    Servo_Init();
+	PWM0_init();
 
     sei(); // Habilitar interrupciones
 
-    Servo_Cerrar(); // iniciar cerrada
     UART_write_txt("\r\nEsclavo I2C - NFC listo!\r\n");
 
     while (1) {
         lectura_NFC();   // Leer tarjetas
+		
+		if (mservo == 1)
+		{
+			PWM0_dca(Talanquera_Abierta, NO_INVERTING);
+			_delay_ms(3000);
+			PWM0_dca(Talanquera_cerrada, NO_INVERTING);
+			mservo = 0;
+		}
     }
 }

@@ -8,12 +8,12 @@
 #include "AdafruitIO_WiFi.h"
 
 // ======== CONFIGURACIÓN WIFI ========
-#define WIFI_SSID       "CRTSTDS"
-#define WIFI_PASS       "ngmc6126"
+#define WIFI_SSID       "HITRON36819"
+#define WIFI_PASS       "E82C6HITRON"
 
 // ======== CONFIGURACIÓN ADAFRUIT IO ========
-#define IO_USERNAME     ""
-#define IO_KEY          ""
+#define IO_USERNAME     "Chruz"
+#define IO_KEY          "aio_NREk48TYN4reudjfxxQz2084g3ir"
 
 AdafruitIO_WiFi io(IO_USERNAME, IO_KEY, WIFI_SSID, WIFI_PASS);
 
@@ -86,8 +86,8 @@ void loop() {
 
   // --- Solicitar datos periódicamente ---
   if (millis() - lastRequest > reqPeriod) {
-    Serial2.println("P?");
-    delay(30);
+    //Serial2.println("P?");
+    //delay(30);
     Serial2.println("D?");
     delay(30);
     Serial2.println("N?");
