@@ -311,6 +311,8 @@ int main(void){
 			}
 			strcpy(uid_anterior, uid_hex);
 		}
+		
+		
 		lcd_print_NFC(uid_hex);
 		
 		lcd_print_Elevador(elevadorNivel);
