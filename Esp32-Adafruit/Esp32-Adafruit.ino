@@ -2,18 +2,22 @@
  * ESP32 + Adafruit IO + UART
  * Envía datos del Maestro (Peso, Distancia y NFC)
  * y recibe comandos (Talanquera y Elevador)
+ * 
+ * Si recibe "X" desde el Maestro → entra en modo
+ * bloqueo 6 s, deja de escuchar Maestro y espera
+ * un comando de elevador desde Adafruit.
  ***************************************************/
 
 #include "WiFi.h"
 #include "AdafruitIO_WiFi.h"
 
 // ======== CONFIGURACIÓN WIFI ========
-#define WIFI_SSID       "HITRON36819"
-#define WIFI_PASS       "E82C6HITRON"
+#define WIFI_SSID       ""
+#define WIFI_PASS       ""
 
 // ======== CONFIGURACIÓN ADAFRUIT IO ========
-#define IO_USERNAME     "Chruz"
-#define IO_KEY          "aio_NREk48TYN4reudjfxxQz2084g3ir"
+#define IO_USERNAME     ""
+#define IO_KEY          ""
 
 AdafruitIO_WiFi io(IO_USERNAME, IO_KEY, WIFI_SSID, WIFI_PASS);
 
@@ -28,19 +32,25 @@ AdafruitIO_Feed *feed_elevador   = io.feed("elevador");
 // Prototipos de callbacks
 void handleElevador(AdafruitIO_Data *data);
 
-// Control de tiempo
-unsigned long lastRequest     = 0;
-const unsigned long reqPeriod = 2000;   // cada 2s pedimos datos al Maestro
-
-// Control de envío a Adafruit
-unsigned long lastSendPeso       = 0;
-unsigned long lastSendDistancia  = 0;
-unsigned long lastSendContrasena = 0;
-const unsigned long sendInterval = 1500;
-
 // Buffer para comando elevador pendiente
 volatile bool elevadorPendiente = false;
 String comandoElevador = "";
+
+// --- Control de estabilidad para Peso ---
+unsigned long lastChangePeso = 0;
+const unsigned long stableDelay = 2000;  // tiempo para considerar estable (ms)
+
+String pesoPendiente = "";
+String ultimoPeso = "";
+
+// Últimos valores enviados (para Distancia y NFC)
+String ultimaDistancia = "";
+String ultimaContrasena = "";
+
+// --- Control de modo bloqueo ---
+bool modoBloqueo = false;          
+unsigned long inicioBloqueo = 0;
+const unsigned long tiempoBloqueo = 6000;  // 6 segundos
 
 void setup() {
   Serial.begin(115200);
@@ -76,25 +86,30 @@ void handleElevador(AdafruitIO_Data *data) {
 void loop() {
   io.run();
 
-  // --- Enviar comando elevador si está pendiente ---
-  if (elevadorPendiente) {
-    Serial2.println(comandoElevador);
-    Serial.print("📤 Elevador enviado al Maestro: ");
-    Serial.println(comandoElevador);
-    elevadorPendiente = false;   // se envió, limpiar bandera
+  // --- Si estamos en modo bloqueo ---
+  if (modoBloqueo) {
+    // esperar elevador desde Adafruit (handleElevador ya lo capta)
+    if (elevadorPendiente) {
+      Serial2.println(comandoElevador);
+      Serial.print("📤 Elevador enviado al Maestro: ");
+      Serial.println(comandoElevador);
+      elevadorPendiente = false;
+
+      // salir del modo bloqueo
+      modoBloqueo = false;
+      Serial.println("✅ Salida de modo bloqueo");
+    }
+
+    // si pasan los 6 segundos y no llegó nada, liberar bloqueo
+    if (millis() - inicioBloqueo > tiempoBloqueo) {
+      modoBloqueo = false;
+      Serial.println("⏱️ Tiempo agotado, regreso a modo normal");
+    }
+
+    return; // ignorar lectura del maestro mientras estamos bloqueados
   }
 
-  // --- Solicitar datos periódicamente ---
-  if (millis() - lastRequest > reqPeriod) {
-    //Serial2.println("P?");
-    //delay(30);
-    Serial2.println("D?");
-    delay(30);
-    Serial2.println("N?");
-    lastRequest = millis();
-  }
-
-  // --- Lectura desde Maestro ---
+  // --- Lectura desde Maestro (modo normal) ---
   if (Serial2.available()) {
     String valor = Serial2.readStringUntil('\n');
     valor.trim();
@@ -102,37 +117,53 @@ void loop() {
     Serial.print("📥 Dato recibido del Maestro: ");
     Serial.println(valor);
 
+    // --- Caso especial: activar modo bloqueo ---
+    if (valor == "X") {
+      modoBloqueo = true;
+      inicioBloqueo = millis();
+      Serial.println("🚫 Entrando en modo bloqueo (espera Adafruit)");
+      return;  // no procesar más
+    }
+
     // --- Peso ---
     if (valor.startsWith("P:")) {
-      if (millis() - lastSendPeso > sendInterval) {
-        String peso = valor.substring(2);
-        feed_peso->save(peso);
-        Serial.print("📤 Peso enviado a Adafruit: ");
-        Serial.println(peso);
-        lastSendPeso = millis();
+      String peso = valor.substring(2);
+      if (peso != ultimoPeso) {
+        pesoPendiente = peso;
+        lastChangePeso = millis();
       }
     }
 
     // --- Distancia ---
     else if (valor.startsWith("D:")) {
-      if (millis() - lastSendDistancia > sendInterval) {
-        String distancia = valor.substring(2);
+      String distancia = valor.substring(2);
+      if (distancia != ultimaDistancia) {
         feed_distancia->save(distancia);
         Serial.print("📤 Distancia enviada a Adafruit: ");
         Serial.println(distancia);
-        lastSendDistancia = millis();
+        ultimaDistancia = distancia;
       }
     }
 
     // --- Contraseña (NFC) ---
     else if (valor.startsWith("N:")) {
-      if (millis() - lastSendContrasena > sendInterval) {
-        String contrasena = valor.substring(2);
+      String contrasena = valor.substring(2);
+      if (contrasena != ultimaContrasena) {
         feed_contrasena->save(contrasena);
         Serial.print("📤 Contraseña enviada a Adafruit: ");
         Serial.println(contrasena);
-        lastSendContrasena = millis();
+        ultimaContrasena = contrasena;
       }
     }
+  }
+
+  // --- Revisión de estabilidad de Peso ---
+  if (pesoPendiente != "" && millis() - lastChangePeso > stableDelay) {
+    feed_peso->save(pesoPendiente);
+    Serial.print("📤 Peso estable enviado a Adafruit: ");
+    Serial.println(pesoPendiente);
+
+    ultimoPeso = pesoPendiente;
+    pesoPendiente = "";
   }
 }
